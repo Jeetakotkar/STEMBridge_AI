@@ -34,7 +34,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",   # Vite dev server (local React)
         "http://localhost:3000",   # CRA dev server (local React)
-        "stem-bridge-rk9iguf01-jeet677.vercel.app",             # your deployed Vercel frontend
+        "https://stem-bridge-ai.vercel.app/",             # your deployed Vercel frontend
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
