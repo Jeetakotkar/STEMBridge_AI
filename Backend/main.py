@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# STEMBridge AI — Backend API  (v2.0)
+# STEMBridge AI — Backend API  (v2.1 — production-ready)
 # ─────────────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,42 +18,39 @@ load_dotenv()
 # ── App & static files ────────────────────────────────────────────────────────
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="STEMBridge AI", version="2.0.0")
+app = FastAPI(title="STEMBridge AI", version="2.1.0")
 
 os.makedirs("simulations", exist_ok=True)
 app.mount("/simulations", StaticFiles(directory="simulations"), name="simulations")
 
-# ── CORS ─────────────────────────────────────────────────────────────────────
-# After deploying your frontend to Vercel, replace the placeholder below with
-# your actual Vercel URL, e.g. "https://stembridge.vercel.app"
-# To find it: Vercel dashboard → your project → Settings → Domains
-_ALLOWED_ORIGINS = [
-    "http://localhost:5173",                    # local Vite dev server
-    "http://localhost:3000",                    # fallback for CRA / Next dev
-    "https://YOUR_VERCEL_APP.vercel.app",       # ← replace after Vercel deployment
-]
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# AFTER you deploy the frontend on Vercel, replace "https://YOUR_APP.vercel.app"
+# with the actual URL Vercel gives you (e.g. https://stembridge-ai.vercel.app).
+# You can also add the URL in your Render environment: FRONTEND_URL=https://...
+_frontend_url = os.getenv("FRONTEND_URL", "https://YOUR_APP.vercel.app")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
+    allow_origins=[
+        "http://localhost:5173",   # Vite dev server (local React)
+        "http://localhost:3000",   # CRA dev server (local React)
+        _frontend_url,             # your deployed Vercel frontend
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # ── Gemini setup ──────────────────────────────────────────────────────────────
-# Add  GEMINI_API_KEY=your_key_here  to your .env file — never hardcode keys
+# Set  GEMINI_API_KEY=your_key_here  in Render → Settings → Environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
+    raise RuntimeError("GEMINI_API_KEY is not set. Add it to your environment variables.")
 
-# You can also override the model in .env: GEMINI_MODEL=gemini-2.0-flash
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Password hashing ──────────────────────────────────────────────────────────
-# pip install passlib[bcrypt]
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -82,110 +79,133 @@ class LoginRequest(BaseModel):
 class Question(BaseModel):
     text: str
     language: str = "English"
-    user_id: Optional[int] = None   # enables history + progress tracking
-    topic: Optional[str] = None     # optional tag for analytics
+    user_id: Optional[int] = None
+    topic: Optional[str] = None
 
 class QuizSubmit(BaseModel):
     user_id: int
     topic: str
     correct_answers: int
     total_questions: int
-    time_taken: int   # seconds
+    time_taken: int
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gemini helpers
+# TASK 1 — Local STEM keyword classifier  (replaces Gemini-based guard)
+# 1 request now = 1 Gemini API call instead of 2.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Topics that are clearly allowed
+_STEM_KEYWORDS = {
+    # Mathematics
+    "math", "mathematics", "algebra", "calculus", "geometry", "trigonometry",
+    "statistics", "probability", "differentiation", "integration", "derivative",
+    "matrix", "matrices", "vector", "equation", "polynomial", "theorem",
+    "proof", "logarithm", "arithmetic", "number theory", "set theory",
+    "limit", "sequence", "series", "permutation", "combination", "binomial",
+    "quadratic", "linear", "gradient", "divergence", "curl", "laplace",
+    # Physics
+    "physics", "mechanics", "kinematics", "dynamics", "force", "motion",
+    "velocity", "acceleration", "momentum", "energy", "work", "power",
+    "gravity", "friction", "thermodynamics", "heat", "temperature",
+    "electromagnetism", "electric", "magnetic", "wave", "optics", "light",
+    "quantum", "relativity", "oscillation", "pendulum", "projectile",
+    "circuit", "resistance", "capacitor", "inductor", "current", "voltage",
+    "pressure", "density", "buoyancy", "refraction", "diffraction",
+    "nuclear", "radioactivity", "photoelectric", "semiconductor",
+    # Chemistry
+    "chemistry", "chemical", "atom", "molecule", "element", "compound",
+    "reaction", "acid", "base", "ph", "organic", "inorganic", "periodic",
+    "bond", "electron", "proton", "neutron", "molar", "solution",
+    "titration", "oxidation", "reduction", "catalyst", "polymer",
+    "enthalpy", "entropy", "equilibrium", "electrochemistry", "isomer",
+    "hydrocarbon", "functional group", "stoichiometry",
+    # Biology
+    "biology", "cell", "dna", "rna", "gene", "genetics", "protein",
+    "enzyme", "photosynthesis", "respiration", "evolution", "ecology",
+    "organism", "bacteria", "virus", "mitosis", "meiosis", "chromosome",
+    "anatomy", "physiology", "nervous", "immune", "digestion",
+    "ecosystem", "taxonomy", "biotechnology", "heredity", "mutation",
+    # Computer Science & Programming
+    "computer", "programming", "algorithm", "data structure", "code",
+    "python", "java", "javascript", "c++", "c#", "sql", "html", "css",
+    "array", "linked list", "tree", "graph", "stack", "queue", "sorting",
+    "searching", "recursion", "complexity", "big o", "database", "api",
+    "software", "operating system", "network", "internet", "compiler",
+    "object oriented", "class", "function", "loop", "variable", "pointer",
+    "binary", "bit", "byte", "memory", "cpu", "hardware", "debugging",
+    "syntax", "runtime", "pointer", "dynamic programming", "greedy",
+    "backtracking", "hash", "heap", "trie", "segment tree",
+    # AI / ML
+    "machine learning", "deep learning", "neural network",
+    "artificial intelligence", "ai", "ml", "model", "training",
+    "dataset", "regression", "classification", "clustering", "nlp",
+    "computer vision", "reinforcement learning", "gradient descent",
+    "overfitting", "underfitting", "accuracy", "loss function",
+    # Engineering
+    "engineering", "electronics", "mechanical", "civil", "electrical",
+    "signal", "control", "transistor", "logic gate", "microcontroller",
+    "arduino", "raspberry pi", "embedded", "pcb", "amplifier",
+    # General academic
+    "theorem", "hypothesis", "experiment", "science", "stem",
+    "study", "explain", "solve", "calculate", "derive", "prove",
+    "formula", "concept", "problem", "question", "homework",
+    "exam", "test", "lecture", "chapter", "textbook",
+}
+
+# Topics that should always be rejected
+_BLOCK_KEYWORDS = {
+    "movie", "film", "actor", "actress", "celebrity", "bollywood", "hollywood",
+    "web series", "netflix", "song", "music", "lyrics", "singer", "dance",
+    "dating", "girlfriend", "boyfriend", "love advice", "relationship advice",
+    "marriage", "divorce", "horoscope", "astrology", "zodiac", "tarot",
+    "politics", "politician", "election", "government", "party", "vote",
+    "cricket", "ipl", "football", "match", "sports score",
+    "gossip", "rumor", "news", "meme", "joke", "fun fact",
+    "instagram", "tiktok", "youtube", "social media", "influencer",
+    "recipe", "cook", "restaurant", "diet plan", "weight loss",
+    "fashion", "clothes", "makeup", "skincare",
+    "whatsapp", "chat", "hi", "hello", "how are you", "tell me about yourself",
+}
+
+_GUARD_REJECTION_MSG = (
+    "STEMBridge AI only answers STEM and academic questions. "
+    "Please ask something related to Science, Technology, Engineering, or Mathematics."
+)
+
+def academic_guard(text: str) -> None:
+    """
+    Local keyword classifier — zero extra Gemini API calls.
+
+    Two-step logic:
+      Step 1 — Hard block: if the input matches a clearly non-academic keyword,
+               reject immediately (fast path).
+      Step 2 — Allow list: the input must contain at least one recognised STEM
+               keyword to proceed. If nothing matches, reject conservatively.
+
+    Result: 1 request = exactly 1 Gemini API call (down from 2).
+    """
+    lower = text.lower()
+
+    # Step 1: explicit block list (movies, celebs, politics, etc.)
+    if any(kw in lower for kw in _BLOCK_KEYWORDS):
+        raise HTTPException(status_code=403, detail=_GUARD_REJECTION_MSG)
+
+    # Step 2: must contain at least one STEM keyword
+    if not any(kw in lower for kw in _STEM_KEYWORDS):
+        raise HTTPException(status_code=403, detail=_GUARD_REJECTION_MSG)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gemini helper
 # ─────────────────────────────────────────────────────────────────────────────
 def call_gemini(prompt: str) -> str:
-    """Raw Gemini call — no academic filter applied here."""
     try:
         return client.models.generate_content(
             model=GEMINI_MODEL, contents=prompt
         ).text
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini error: {str(e)}")
-
-
-def academic_guard(text: str) -> None:
-    """
-    Raises HTTP 403 if the input is clearly NOT a STEM / academic question.
-
-    How it works (zero Gemini calls):
-      - Checks the normalised text against a STEM keyword allowlist first.
-        Any match → immediately allowed (fast path).
-      - If no STEM keyword is found, checks against a blocklist of obviously
-        off-topic categories (movies, celebs, politics, dating, …).
-        Any match → HTTP 403.
-      - If neither list matches we allow the request; Gemini itself will give
-        a sensible answer or politely decline.
-
-    This keeps 1 request = 1 Gemini API call.
-    """
-    normalised = text.lower()
-
-    # ── STEM / academic allowlist ─────────────────────────────────────────────
-    STEM_KEYWORDS = {
-        # Core STEM disciplines
-        "math", "maths", "mathematics", "algebra", "calculus", "geometry",
-        "trigonometry", "statistics", "probability", "arithmetic", "number theory",
-        "linear algebra", "differential", "integral", "equation", "theorem",
-        "physics", "mechanics", "thermodynamics", "electromagnetism", "optics",
-        "quantum", "relativity", "kinematics", "dynamics", "force", "energy",
-        "momentum", "gravity", "wave", "frequency", "voltage", "current", "circuit",
-        "chemistry", "organic", "inorganic", "reaction", "element", "compound",
-        "molecule", "atom", "electron", "proton", "neutron", "periodic table",
-        "acid", "base", "ph", "bond", "polymer", "titration", "mole",
-        "biology", "cell", "dna", "rna", "genetics", "evolution", "ecology",
-        "photosynthesis", "respiration", "enzyme", "protein", "virus", "bacteria",
-        "anatomy", "physiology", "taxonomy", "mitosis", "meiosis",
-        "computer science", "programming", "algorithm", "data structure",
-        "code", "coding", "python", "java", "javascript", "c++", "c#",
-        "html", "css", "sql", "database", "array", "linked list", "tree",
-        "graph", "sorting", "searching", "recursion", "object oriented",
-        "machine learning", "deep learning", "neural network", "ai",
-        "artificial intelligence", "nlp", "computer vision", "model",
-        "engineering", "circuit", "signal", "mechanical", "electrical",
-        "civil", "software", "hardware", "semiconductor", "microprocessor",
-        # School / college subjects
-        "science", "theorem", "formula", "proof", "hypothesis", "experiment",
-        "homework", "exam", "test", "assignment", "lecture", "textbook",
-        "school", "college", "university", "syllabus", "subject", "chapter",
-        "exercise", "problem", "solution", "study", "revision", "notes",
-        "explain", "definition", "concept", "principle", "law", "theory",
-        # Common academic verbs / phrases
-        "how does", "what is", "why does", "derive", "calculate", "solve",
-        "prove", "simplify", "differentiate", "integrate", "factorise", "factorize",
-    }
-
-    if any(kw in normalised for kw in STEM_KEYWORDS):
-        return   # fast-path: clearly academic
-
-    # ── Off-topic blocklist ───────────────────────────────────────────────────
-    BLOCKED_KEYWORDS = {
-        # Entertainment / pop culture
-        "movie", "film", "actor", "actress", "celebrity", "celebrity",
-        "hollywood", "bollywood", "tv show", "television", "series", "netflix",
-        "song", "singer", "musician", "band", "concert", "album", "lyrics",
-        "sports team", "cricket score", "football score", "ipl", "match score",
-        # Politics & news
-        "politician", "prime minister", "president", "election", "party",
-        "government policy", "news", "breaking news",
-        # Dating / personal / random chat
-        "dating", "girlfriend", "boyfriend", "relationship advice", "propose",
-        "marriage", "breakup", "crush", "flirt", "love advice",
-        "tell me a joke", "what's up", "how are you", "bored",
-        "recommend a movie", "recommend a song",
-    }
-
-    if any(kw in normalised for kw in BLOCKED_KEYWORDS):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "STEMBridge AI only answers STEM and academic questions. "
-                "Please ask something related to Science, Technology, "
-                "Engineering, or Mathematics."
-            ),
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,7 +220,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         name=user.name,
         email=user.email,
         age=user.age,
-        password=pwd_ctx.hash(user.password),   # 🔒 bcrypt — NEVER store plain text
+        password=pwd_ctx.hash(user.password),
     )
     db.add(new_user)
     db.commit()
@@ -231,7 +251,7 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI Tutor  (all endpoints guarded by academic_guard)
+# AI Tutor
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/doubt", tags=["AI Tutor"])
 def doubt_solver(q: Question, db: Session = Depends(get_db)):
@@ -295,7 +315,6 @@ def practice_question(q: Question):
 
 @app.post("/notes", tags=["AI Tutor"])
 def notes_generator(q: Question, db: Session = Depends(get_db)):
-    """Generate structured revision notes for a topic and optionally save them."""
     academic_guard(q.text)
 
     prompt = (
@@ -323,7 +342,6 @@ def notes_generator(q: Question, db: Session = Depends(get_db)):
 
 @app.post("/learning_path", tags=["AI Tutor"])
 def learning_path(q: Question):
-    """Generate a personalized step-by-step learning roadmap."""
     academic_guard(q.text)
 
     prompt = (
@@ -345,10 +363,6 @@ def learning_path(q: Question):
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/quiz/generate", tags=["Quiz"])
 def generate_quiz(q: Question):
-    """
-    Generate 5 MCQ questions as structured JSON.
-    Difficulty: Q1-Q2 easy → Q3 medium → Q4-Q5 hard.
-    """
     academic_guard(q.text)
 
     prompt = (
@@ -388,13 +402,8 @@ def generate_quiz(q: Question):
 
 @app.post("/quiz/submit", tags=["Quiz"])
 def submit_quiz(data: QuizSubmit, db: Session = Depends(get_db)):
-    """
-    Store quiz results and upsert the user's progress for this topic.
-    Score is a rolling average across all attempts on the same topic.
-    """
     score_pct = round((data.correct_answers / data.total_questions) * 100, 1)
 
-    # Always save the raw quiz attempt
     db.add(models.QuizResult(
         user_id=data.user_id,
         topic=data.topic,
@@ -404,7 +413,6 @@ def submit_quiz(data: QuizSubmit, db: Session = Depends(get_db)):
         time_taken=data.time_taken,
     ))
 
-    # Upsert UserProgress: update existing row or create a new one
     progress = (
         db.query(models.UserProgress)
         .filter_by(user_id=data.user_id, topic_name=data.topic)
@@ -426,7 +434,6 @@ def submit_quiz(data: QuizSubmit, db: Session = Depends(get_db)):
         ))
 
     db.commit()
-
     return {
         "score": score_pct,
         "correct": data.correct_answers,
@@ -444,7 +451,9 @@ Generate a complete Python script that visually animates the STEM concept provid
 STRICT RULES — every rule must be followed or the script will fail:
 1. Use ONLY: matplotlib, matplotlib.animation, numpy, math
 2. Do NOT import any other library
-3. First lines must be:
+3. First lines must be EXACTLY:
+   import matplotlib
+   matplotlib.use('Agg')
    import numpy as np
    import matplotlib.pyplot as plt
    import matplotlib.animation as animation
@@ -467,11 +476,16 @@ def simulate(q: Question, db: Session = Depends(get_db)):
         code.replace("```python", "").replace("```py", "").replace("```", "").strip()
     )
 
-    unique_id        = str(uuid.uuid4())[:8]
-    output_filename  = f"sim_{unique_id}.gif"
-    output_path      = os.path.abspath(f"simulations/{output_filename}")
+    # ── Force Agg backend so matplotlib works on headless servers (Render) ────
+    # If Gemini didn't include it at the top, we inject it ourselves.
+    # Without this, the script crashes on any server with no display.
+    if "matplotlib.use('Agg')" not in clean_code:
+        clean_code = "import matplotlib\nmatplotlib.use('Agg')\n" + clean_code
 
-    # Replace the OUTPUT_PATH placeholder Gemini was told to use
+    unique_id       = str(uuid.uuid4())[:8]
+    output_filename = f"sim_{unique_id}.gif"
+    output_path     = os.path.abspath(f"simulations/{output_filename}")
+
     clean_code = (
         clean_code
         .replace("OUTPUT_PATH", output_path)
@@ -484,7 +498,6 @@ def simulate(q: Question, db: Session = Depends(get_db)):
         f.write(clean_code)
 
     try:
-        # sys.executable ensures we use the SAME Python that is running FastAPI
         result = subprocess.run(
             [sys.executable, tmp],
             capture_output=True, text=True, timeout=40,
@@ -517,7 +530,7 @@ def simulate(q: Question, db: Session = Depends(get_db)):
         raise HTTPException(status_code=504, detail="Simulation timed out. Try a simpler concept.")
 
     except HTTPException:
-        raise   # re-raise our own HTTP errors without wrapping them
+        raise
 
     except Exception as e:
         if os.path.exists(tmp): os.remove(tmp)
@@ -529,7 +542,6 @@ def simulate(q: Question, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/progress/{user_id}", tags=["Analytics"])
 def get_progress(user_id: int, db: Session = Depends(get_db)):
-    """Return all topics studied + overall stats for the dashboard."""
     progress = (
         db.query(models.UserProgress)
         .filter_by(user_id=user_id)
@@ -577,10 +589,6 @@ def get_progress(user_id: int, db: Session = Depends(get_db)):
 
 @app.get("/weakness/{user_id}", tags=["Analytics"])
 def get_weaknesses(user_id: int, db: Session = Depends(get_db)):
-    """
-    Identify weak areas (accuracy < 60%) and strong areas (accuracy >= 80%).
-    Generates a plain-English recommendation for the student.
-    """
     progress = db.query(models.UserProgress).filter_by(user_id=user_id).all()
 
     if not progress:
@@ -596,14 +604,8 @@ def get_weaknesses(user_id: int, db: Session = Depends(get_db)):
     )
 
     return {
-        "weak_areas": [
-            {"topic": p.topic_name, "accuracy": p.accuracy, "hints_used": p.hints_used}
-            for p in weak
-        ],
-        "strong_areas": [
-            {"topic": p.topic_name, "accuracy": p.accuracy}
-            for p in strong
-        ],
+        "weak_areas":   [{"topic": p.topic_name, "accuracy": p.accuracy, "hints_used": p.hints_used} for p in weak],
+        "strong_areas": [{"topic": p.topic_name, "accuracy": p.accuracy} for p in strong],
         "recommendation": recommendation,
     }
 
@@ -617,15 +619,11 @@ def get_doubt_history(user_id: int, db: Session = Depends(get_db)):
         db.query(models.DoubtHistory)
         .filter_by(user_id=user_id)
         .order_by(models.DoubtHistory.created_at.desc())
-        .limit(20)
-        .all()
+        .limit(20).all()
     )
     return {
-        "count": len(items),
-        "doubts": [
-            {"question": h.question, "topic": h.topic, "date": h.created_at}
-            for h in items
-        ],
+        "count":  len(items),
+        "doubts": [{"question": h.question, "topic": h.topic, "date": h.created_at} for h in items],
     }
 
 
@@ -635,15 +633,11 @@ def get_simulation_history(user_id: int, db: Session = Depends(get_db)):
         db.query(models.SimulationHistory)
         .filter_by(user_id=user_id)
         .order_by(models.SimulationHistory.created_at.desc())
-        .limit(20)
-        .all()
+        .limit(20).all()
     )
     return {
-        "count": len(items),
-        "simulations": [
-            {"concept": h.concept, "gif_url": h.gif_url, "date": h.created_at}
-            for h in items
-        ],
+        "count":       len(items),
+        "simulations": [{"concept": h.concept, "gif_url": h.gif_url, "date": h.created_at} for h in items],
     }
 
 
@@ -653,13 +647,9 @@ def get_notes_history(user_id: int, db: Session = Depends(get_db)):
         db.query(models.NotesHistory)
         .filter_by(user_id=user_id)
         .order_by(models.NotesHistory.created_at.desc())
-        .limit(20)
-        .all()
+        .limit(20).all()
     )
     return {
         "count": len(items),
-        "notes": [
-            {"topic": h.topic, "date": h.created_at}
-            for h in items
-        ],
+        "notes": [{"topic": h.topic, "date": h.created_at} for h in items],
     }

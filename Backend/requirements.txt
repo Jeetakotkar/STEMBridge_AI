@@ -1,26 +1,25 @@
-﻿# Web Framework
+﻿# ── Web Framework ─────────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
 
-# Database
+# ── Database ──────────────────────────────────────────────────────────────────
 SQLAlchemy
 PyMySQL
 python-dotenv
 
-# Google AI & Cloud Services
+# ── Google AI  (NEW SDK only — do NOT add google-generativeai or
+#    google-ai-generativelanguage; they conflict with google-genai) ────────────
 google-genai
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-ai-generativelanguage
 
-# Security & Data
+# ── Security ──────────────────────────────────────────────────────────────────
 passlib[bcrypt]
 pydantic
 python-multipart
 
-# Utilities & Scientific Libraries
+# ── Scientific (required by /simulate to generate GIF animations) ─────────────
 numpy
 matplotlib
 pillow
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
 requests
