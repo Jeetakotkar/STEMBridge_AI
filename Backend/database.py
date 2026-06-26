@@ -31,15 +31,12 @@ if not SQLALCHEMY_DATABASE_URL:
     )
 
 # ── SSL setup for Aiven (and any cloud MySQL provider) ───────────────────────
-# Aiven requires SSL on all connections. On Render (Ubuntu/Linux), the system
-# CA bundle can verify Aiven's certificates without needing a separate cert file.
-_ssl_ctx = ssl.create_default_context(
-    cafile="/etc/ssl/certs/ca-certificates.crt"   # Render's system CA bundle
-)
-# Locally (Windows/Mac) the system bundle path is different, so fall back
-# gracefully: if the file doesn't exist, use Python's built-in CA bundle.
-if not os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-    _ssl_ctx = ssl.create_default_context()       # uses Python's bundled CAs
+# Aiven requires SSL but uses a self-signed certificate chain.
+# We enable SSL (so traffic is encrypted) but disable cert verification
+# since Aiven's cert cannot be verified by standard CA bundles.
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
