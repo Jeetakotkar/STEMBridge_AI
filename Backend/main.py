@@ -62,9 +62,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
 
-# You can also override the model in .env: GEMINI_MODEL=gemini-2.0-flash
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-
+# You can also override the model in .env: GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Password hashing ──────────────────────────────────────────────────────────
