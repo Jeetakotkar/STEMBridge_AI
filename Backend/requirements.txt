@@ -12,7 +12,10 @@ python-dotenv
 google-genai
 
 # ── Security ──────────────────────────────────────────────────────────────────
+# passlib's bcrypt self-test breaks on bcrypt>=4.1 (ValueError: password
+# cannot be longer than 72 bytes) — pinning avoids the crash seen on /register.
 passlib[bcrypt]
+bcrypt==4.0.1
 pydantic
 python-multipart
 
